@@ -1,0 +1,16 @@
+# Google OAuth credentials — never commit these
+token.json
+client_secret_*.json
+
+# Preview output
+preview.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# IDE
+.vscode/
+.idea/
