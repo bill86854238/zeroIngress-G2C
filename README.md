@@ -54,7 +54,7 @@ MY_EMAIL=你的_Gmail_地址
 ```
 
 - `MY_EMAIL`：你的 Gmail 帳號，用來過濾掉自己寄出的信，避免誤判
-- `BRAVE_API_KEY`：可在 [Brave Search API](https://brave.com/search/api/) 申請，免費方案每月 2000 次查詢。若不需要飯店資訊補充可留空
+- `BRAVE_API_KEY`：選填。可在 [Brave Search API](https://brave.com/search/api/) 申請，免費方案每月 2000 次查詢。未設定或不加 `--enrich` 時，Brave 功能完全不啟用
 
 ---
 
