@@ -48,7 +48,11 @@ pip install google-auth google-auth-oauthlib google-auth-httplib2 \
 
 ## 設定
 
-在專案目錄建立 `.env`：
+複製範本後填入自己的值：
+
+```bash
+cp .env.example .env
+```
 
 ```
 MY_EMAIL=你的_Gmail_地址
@@ -57,6 +61,8 @@ BRAVE_API_KEY=你的_Brave_Search_API_Key
 
 - `MY_EMAIL`：你的 Gmail 帳號，用來過濾掉自己寄出的信
 - `BRAVE_API_KEY`：選填。可在 [Brave Search API](https://brave.com/search/api/) 申請，免費方案每月 2000 次查詢。未設定或不加 `--enrich` 時，Brave 功能完全不啟用
+
+`.env.example` 可以 commit 到 repo；`.env` 已列入 `.gitignore`，請勿上傳。
 
 ---
 
