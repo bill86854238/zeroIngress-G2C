@@ -37,12 +37,15 @@ CREDENTIALS_FILE = next(
     None,
 )
 TOKEN_FILE = "token.json"
+PROCESSED_LOG = "processed.log"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen3.6:35b-a3b"
 CALENDAR_NAME = "G2C AI Sync"
 TAIPEI_TZ = timezone(timedelta(hours=8))
 BASE_YEAR = 2026
 MAX_BODY_CHARS = 3000
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 KEYWORDS = [
     "高鐵", "台鐵", "train", "hsr",
@@ -134,6 +137,18 @@ def get_credentials() -> Credentials:
     creds = flow.run_local_server(port=0)
     _save_token(creds)
     return creds
+
+
+def _load_processed() -> set:
+    if not os.path.exists(PROCESSED_LOG):
+        return set()
+    with open(PROCESSED_LOG, "r") as f:
+        return set(line.strip() for line in f if line.strip())
+
+
+def _save_processed(msg_id: str):
+    with open(PROCESSED_LOG, "a") as f:
+        f.write(msg_id + "\n")
 
 
 def _save_token(creds: Credentials):
@@ -438,6 +453,57 @@ def _is_midnight(dt_str: str) -> bool:
     return dt.hour == 0 and dt.minute == 0 and dt.second == 0
 
 
+def _is_hotel_event(event: "CalendarEvent") -> bool:
+    hotel_keywords = ["入住", "hotel", "inn", "hostel", "villa", "resort", "飯店", "旅館", "ホテル", "dormy", "route inn"]
+    return any(k.lower() in event.title.lower() for k in hotel_keywords)
+
+
+def brave_enrich(event: "CalendarEvent") -> str:
+    """Query Brave Search for hotel check-in time and address, return enrichment string."""
+    if not BRAVE_API_KEY or not _is_hotel_event(event):
+        return ""
+
+    query = f"{event.title} check-in time address phone"
+    if event.location:
+        query = f"{event.title} {event.location} check-in time address"
+
+    try:
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": BRAVE_API_KEY,
+        }
+        resp = requests.get(BRAVE_SEARCH_URL, headers=headers,
+                            params={"q": query, "count": 3}, timeout=10)
+        resp.raise_for_status()
+        results = resp.json().get("web", {}).get("results", [])
+        if not results:
+            return ""
+
+        # Pass top snippets to LLM to extract structured info
+        snippets = "\n".join(
+            f"- {r.get('title', '')}: {r.get('description', '')[:200]}"
+            for r in results
+        )
+
+        llm_payload = {
+            "model": OLLAMA_MODEL,
+            "system": "You are a hotel information extractor. From the search snippets, extract check-in time, check-out time, address, and phone number if available. Reply in Traditional Chinese, 2-3 lines max. If info not found, reply with empty string.",
+            "prompt": f"Hotel: {event.title}\n\nSearch results:\n{snippets}",
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0},
+        }
+        llm_resp = requests.post(OLLAMA_URL, json=llm_payload, timeout=60)
+        llm_resp.raise_for_status()
+        enrichment = llm_resp.json().get("response", "").strip()
+        return enrichment
+
+    except Exception as e:
+        print(f"  [Brave] enrichment failed: {e}")
+        return ""
+
+
 def _flight_number(title: str) -> str | None:
     """Extract flight number like BR166, JL98, JX838 from title."""
     m = re.search(r'\b([A-Z]{2})\s*(\d{2,4})\b', title)
@@ -566,12 +632,16 @@ def generate_preview_html(events_data: list[dict], output_path: str = "preview.h
 
 
 def main():
-    live = "--live" in sys.argv
+    live    = "--live" in sys.argv
     preview = "--preview" in sys.argv
+    enrich  = "--enrich" in sys.argv
+    reset   = "--reset" in sys.argv  # clear processed.log and reprocess all
 
     if live:
         print("=" * 60)
         print("  LIVE MODE — events will be written to Google Calendar")
+        if enrich:
+            print("  + Brave enrichment ON")
         print("=" * 60)
     elif preview:
         print("[Preview] Will generate preview.html after processing...")
@@ -580,7 +650,15 @@ def main():
         print("  DRY-RUN MODE — nothing will be written to Google Calendar")
         print("  Use --preview to generate an HTML preview file")
         print("  Use --live to actually insert events")
+        print("  Use --live --enrich to also enrich hotels via Brave Search")
+        print("  Use --reset to reprocess all emails (ignore processed.log)")
         print("=" * 60)
+
+    if reset and os.path.exists(PROCESSED_LOG):
+        os.remove(PROCESSED_LOG)
+        print("[Reset] Cleared processed.log")
+
+    processed_ids = _load_processed()
 
     creds = get_credentials()
     gmail_svc = build("gmail", "v1", credentials=creds)
@@ -589,11 +667,19 @@ def main():
     print("\n[Fetching] Scanning Gmail for travel-related emails...")
     emails = fetch_candidate_emails(gmail_svc)
 
+    # Skip already-processed emails (unless reset)
+    if processed_ids:
+        before = len(emails)
+        emails = [e for e in emails if e["id"] not in processed_ids]
+        skipped = before - len(emails)
+        if skipped:
+            print(f"[Skip] {skipped} already-processed email(s)")
+
     if not emails:
-        print("[Done] No matching emails found.")
+        print("[Done] No new emails to process.")
         return
 
-    print(f"[Found] {len(emails)} candidate email(s)\n")
+    print(f"[Found] {len(emails)} new candidate email(s)\n")
 
     calendar_id = None
     if live:
@@ -612,20 +698,31 @@ def main():
             print(f"  [WARN] LLM parse error — {e}")
             results["failed"] += 1
             failed_subjects.append(email["subject"][:60])
-            events_data.append({"status": "fail", "subject": email["subject"], "reason": str(e)})
+            events_data.append({"status": "fail", "subject": email["subject"], "msg_id": email["id"], "reason": str(e)})
             continue
 
         if not parsed_events:
             print("  [SKIP] No travel event detected")
             results["skipped"] += 1
-            events_data.append({"status": "skip", "subject": email["subject"], "reason": "No travel event detected"})
+            events_data.append({"status": "skip", "subject": email["subject"], "msg_id": email["id"], "reason": "No travel event detected"})
+            if live:
+                _save_processed(email["id"])
             continue
 
         for event in parsed_events:
+            # Brave enrichment for hotel events (only when --enrich flag is set)
+            if enrich and _is_hotel_event(event) and BRAVE_API_KEY:
+                enrichment = brave_enrich(event)
+                if enrichment:
+                    event = event.model_copy(update={
+                        "description": (event.description + "\n\n" + enrichment).strip()
+                    })
+                    print(f"  [Brave] enriched: {event.title}")
+
             tag = "全天" if event.is_all_day else event.start[11:16]
             warning = _check_suspicious(email, event)
             status = "suspicious" if warning else "ok"
-            events_data.append({"status": status, "subject": email["subject"], "event": event, "reason": warning or ""})
+            events_data.append({"status": status, "subject": email["subject"], "msg_id": email["id"], "event": event, "reason": warning or ""})
             flag = " [!]" if warning else ""
             print(f"  [DRY-RUN] {event.title} | {event.start[:10]} {tag}{flag}")
 
@@ -651,6 +748,10 @@ def main():
         for item in events_data:
             if item["status"] == "suspicious":
                 print(f"  [SKIP-SUSPICIOUS] {item['event'].title} — {item['reason']}")
+                _save_processed(item["msg_id"])
+                continue
+            if item["status"] == "skip" and item.get("msg_id"):
+                _save_processed(item["msg_id"])
                 continue
             if item["status"] != "ok":
                 continue
@@ -658,6 +759,7 @@ def main():
             try:
                 insert_event(cal_svc, calendar_id, event)
                 print(f"  [OK] Inserted: {event.title}")
+                _save_processed(item["msg_id"])
             except Exception as e:
                 print(f"  [ERROR] Calendar insert failed — {e}")
                 results["success"] -= 1

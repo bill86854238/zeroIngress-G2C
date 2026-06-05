@@ -2,6 +2,9 @@
 token.json
 client_secret_*.json
 
+# Runtime state
+processed.log
+
 # Preview output
 preview.html
 
