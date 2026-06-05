@@ -1,5 +1,7 @@
 # zeroIngress-G2C
 
+[English](README.en.md)
+
 本地端 Gmail 自動解析信件並同步到 Google Calendar，使用 Ollama 本地 LLM，資料完全在本機處理，不經過任何第三方雲端服務。
 
 預設支援旅遊行程（機票、飯店、租車、機場接送），也可自行擴充關鍵字支援演唱會、醫療預約、餐廳訂位等任何有時間資訊的信件。

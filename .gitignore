@@ -5,6 +5,9 @@ client_secret_*.json
 # Runtime state
 processed.log
 
+# Windows shortcuts
+*.bat
+
 # Preview output
 preview.html
 
