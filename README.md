@@ -59,7 +59,7 @@ Brave API Key 可在 [Brave Search API](https://brave.com/search/api/) 申請，
 ## 使用方式
 
 ```bash
-# 乾跑預覽（不寫入行事曆）
+# 模擬執行（不寫入行事曆）
 python sync_now.py
 
 # 輸出 HTML 預覽到 preview.html 並自動開啟瀏覽器

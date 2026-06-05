@@ -647,11 +647,11 @@ def main():
         print("[Preview] Will generate preview.html after processing...")
     else:
         print("=" * 60)
-        print("  DRY-RUN MODE — nothing will be written to Google Calendar")
-        print("  Use --preview to generate an HTML preview file")
-        print("  Use --live to actually insert events")
-        print("  Use --live --enrich to also enrich hotels via Brave Search")
-        print("  Use --reset to reprocess all emails (ignore processed.log)")
+        print("  模擬執行模式 — 不會寫入 Google Calendar")
+        print("  --preview   輸出 HTML 預覽")
+        print("  --live      實際寫入行事曆")
+        print("  --enrich    搭配 --live，用 Brave Search 補充飯店資訊")
+        print("  --reset     清除處理記錄，重新處理全部信件")
         print("=" * 60)
 
     if reset and os.path.exists(PROCESSED_LOG):
