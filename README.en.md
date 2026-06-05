@@ -1,124 +1,155 @@
 # zeroIngress-G2C
 
-Automatically parse Gmail messages and sync events to Google Calendar using a local Ollama LLM. All data is processed on your machine — no third-party cloud services involved.
+[繁體中文](README.md)
 
-Designed for travel itineraries (flights, hotels, car rentals, airport transfers) out of the box. Extend the keyword list to cover concerts, medical appointments, restaurant reservations, or any email that contains time-based information.
+Automatically scans Gmail for travel, transport, and event emails, extracts itinerary details using AI, and writes events to Google Calendar.
+
+Two versions are available:
+
+| | v2 Google Apps Script | v1 Local Python |
+|---|---|---|
+| Runs | Automatically every hour in the cloud | Manually on your machine |
+| LLM | Swappable (see below) | Ollama (local model) |
+| Needs local machine | No | No (manual trigger) |
+| Privacy | Email data sent to cloud LLM | Data stays on your machine |
+| Setup difficulty | Easy (paste one script) | Requires Python + Ollama |
+
+> **v1** is tagged as `v1.0-local-ollama`. Switch to that tag if privacy is a priority.
+
+---
+
+## v2 LLM options
+
+Switch between providers in the `CONFIG` block of `gas/Code.gs`:
+
+### Option A: Gemini (Google)
+
+- **Free tier**: `gemini-2.5-flash`, 20 requests/day — not enough for a 45-email backfill
+- **Paid**: Buy NT$1,000 credits (one-time, not a subscription), unlocks 1,000 RPM — lasts years at this usage level (~NT$0.3/run)
+- Script Properties key: `GEMINI_API_KEY`
+
+### Option B: Groq (current)
+
+```js
+GROQ_MODEL: "llama-3.3-70b-versatile",
+```
+
+- **Free tier limit**: 100,000 tokens/day (~50–80 emails) — fine for daily trickle, hits the wall on large backfills
+- Script Properties key: `GROQ_API_KEY` — get one at [console.groq.com/keys](https://console.groq.com/keys)
+
+> **Practical advice**: Groq free tier works well for day-to-day use (1–2 new emails per hour). For a one-time backfill of many old emails, consider buying Gemini credits temporarily.
 
 ---
 
 ## Features
 
-- Gmail filtering by configurable keyword list
+- Gmail filtering by travel, accommodation, and event keywords
 - Automatic outbound/return flight splitting
 - Multi-day all-day events (hotel check-in → check-out)
 - Duplicate detection (same flight number + date)
-- Suspicious parse results flagged in orange — not written to calendar
-- Incremental sync: processed email IDs are logged and skipped on the next run
-- Optional Brave Search API enrichment for hotel check-in times and addresses
+- Suspicious parse results (e.g. hallucinated flight info) are silently skipped
+- Incremental sync: processed email IDs are tracked and skipped on the next run
 
 ---
 
-## Requirements
+## v2: Google Apps Script (recommended)
 
-### Local environment
+No local environment needed. Set it up once and it runs automatically every hour.
+
+### Requirements
+
+- A Google account with Gmail and Google Calendar
+- A Gemini API key (free tier is sufficient): create one at [Google AI Studio](https://aistudio.google.com/apikey)
+
+### Setup
+
+1. Go to [Google Apps Script](https://script.google.com) and click **New project**
+2. Paste the entire contents of `gas/Code.gs` into the editor (replace the default `myFunction`)
+3. Open **Project Settings** → **Script Properties** → add:
+   - Key: `GEMINI_API_KEY`  Value: your Gemini API key
+4. In the function dropdown, select `setupTrigger` and click Run (⏵). Authorise Gmail + Calendar access when prompted
+5. Done. `syncEmails` will now run automatically every hour
+
+### Manual run
+
+Select `syncEmails` in the function dropdown and click Run to trigger a sync immediately.
+
+### Viewing logs
+
+Go to **Executions** in the left sidebar of the GAS editor to see Logger output from each run.
+
+### Resetting processed records
+
+Run `resetProcessed()` to clear the processed-email log. The next run will re-scan all emails.
+
+---
+
+## v1: Local Python version
+
+All data is processed locally — no third-party cloud LLM involved.
+
+> Switch to the stable tag: `git checkout v1.0-local-ollama`
+
+### Requirements
 
 - Python 3.11+
-- [Ollama](https://ollama.com) 0.30.4+, with a model that supports structured output pulled (recommended: `qwen3:30b-a3b` or `gemma3:12b`)
+- [Ollama](https://ollama.com) 0.30.4+, with a model that supports structured output (recommended: `qwen3.6:35b-a3b`)
+- Google Cloud OAuth credentials with Gmail API + Google Calendar API enabled
 
-### Google Cloud
-
-1. Create or select a project in [Google Cloud Console](https://console.cloud.google.com/)
-2. Enable the **Gmail API** and **Google Calendar API**
-3. Create an OAuth 2.0 credential (application type: **Desktop app**)
-4. Download the credential file — it will be named `client_secret_*.json` — and place it in the project directory
-
----
-
-## Installation
+### Installation
 
 ```bash
 pip install google-auth google-auth-oauthlib google-auth-httplib2 \
             google-api-python-client pydantic python-dotenv \
-            beautifulsoup4 python-dateutil requests \
-            caldav icalendar
+            beautifulsoup4 python-dateutil requests
 ```
 
----
-
-## Configuration
-
-Copy `.env.example` to `.env` and fill in your values:
-
-```
-MY_EMAIL=your_gmail@gmail.com
-BRAVE_API_KEY=your_brave_search_api_key
-```
-
-- `MY_EMAIL` — your Gmail address, used to filter out emails you sent yourself
-- `BRAVE_API_KEY` — optional. Get a free key at [Brave Search API](https://brave.com/search/api/) (2,000 requests/month on the free plan). Brave enrichment is disabled when this is blank or when `--enrich` is not passed
-
----
-
-## Usage
+### Configuration
 
 ```bash
-# Incremental write — default behaviour, skips already-processed emails
-python sync_now.py
-
-# Output an HTML preview to preview.html and open it in the browser (no write)
-python sync_now.py --preview
-
-# Same as default, plus Brave Search enrichment for hotel info
-python sync_now.py --enrich
-
-# Reset processed-email log and reprocess everything
-python sync_now.py --reset
+cp .env.example .env
 ```
 
-The **first run** will open a browser for Google OAuth consent. After authorising, `token.json` is saved automatically and subsequent runs will not require re-authorisation.
+Fill in `.env`:
+
+```
+MY_EMAIL=your_gmail_address@gmail.com
+```
+
+### Usage
+
+```bash
+# HTML preview — opens in browser, no write
+python sync_now.py --preview
+
+# Write events to calendar
+python sync_now.py --live
+
+# Reset processed log and reprocess all emails
+python sync_now.py --reset
+```
 
 ---
 
 ## Calendar
 
-### Google Calendar (default)
-
-The first write creates a dedicated calendar named **G2C AI Sync**. To start fresh, delete the calendar in Google Calendar — your other calendars are not affected.
-
-### Synology CalDAV (optional)
-
-If you have a Synology NAS with the Calendar package installed, you can write events there instead — keeping your itinerary data off Google. Set the following in `.env`:
-
-```
-SYNC_TARGET=caldav
-CALDAV_URL=http://<NAS_IP>:5000/caldav/<username>/
-CALDAV_USERNAME=your_username
-CALDAV_PASSWORD=your_password
-CALDAV_CALENDAR=My Calendar
-```
-
-Tailscale or a reverse proxy work fine — no open ports required.
-
-> **Future direction**: Email is still fetched from Gmail, so Google retains visibility at the message layer. Fully removing Google from the pipeline would require routing booking/flight confirmation emails to a privacy-focused inbox (e.g. Proton Mail) and fetching via IMAP instead. Not yet implemented.
+The first write creates a dedicated calendar named **G2C AI Sync**. To start fresh, delete that calendar in Google Calendar — your other calendars are not affected.
 
 ---
 
 ## Customising keywords
 
-Edit the `KEYWORDS` list in `sync_now.py`:
+**v2**: Edit the `KEYWORDS` array in `gas/Code.gs`.
 
-```python
-KEYWORDS = [
-    "flight", "hotel", "booking",       # default travel keywords
-    "concert", "appointment", "reservation",  # add your own
-]
-```
+**v1**: Edit the `KEYWORDS` list in `sync_now.py`.
+
+Defaults cover travel (flights, hotels, car rentals, airport transfers), event tickets (concerts, exhibitions), medical appointments, and restaurant reservations.
 
 ---
 
 ## Filtering logic
 
-**Keyword matching** — subject and body are both checked.
+**Keyword matching** — both subject and body are checked.
 
 **Automatically excluded:**
 - Cancellation notices
@@ -131,7 +162,5 @@ KEYWORDS = [
 
 ## Security notes
 
-- `token.json` and `client_secret_*.json` contain your Google account credentials — **do not commit them to a public repo**
-- `.env` is gitignored — use `.env.example` as a reference and never commit your actual `.env`
-- `processed.log` tracks processed email IDs; deleting it causes all emails to be reprocessed on the next run
-- LLM parsing is not perfect — use `--preview` to review results before running `--live`
+- **v2**: The Gemini API key is stored in GAS Script Properties — it never appears in the source code
+- **v1**: `token.json` and `client_secret_*.json` contain your Google account credentials — do not commit them to a public repo
