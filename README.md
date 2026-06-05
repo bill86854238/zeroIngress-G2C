@@ -41,7 +41,8 @@
 ```bash
 pip install google-auth google-auth-oauthlib google-auth-httplib2 \
             google-api-python-client pydantic python-dotenv \
-            beautifulsoup4 python-dateutil requests
+            beautifulsoup4 python-dateutil requests \
+            caldav icalendar
 ```
 
 ---
@@ -69,20 +70,17 @@ BRAVE_API_KEY=你的_Brave_Search_API_Key
 ## 使用方式
 
 ```bash
-# 模擬執行（不寫入行事曆）
+# 增量寫入（預設行為，自動跳過已處理的信件）
 python sync_now.py
 
-# 輸出 HTML 預覽到 preview.html 並自動開啟瀏覽器
+# 輸出 HTML 預覽到 preview.html 並自動開啟瀏覽器（不寫入）
 python sync_now.py --preview
 
-# 增量寫入（自動跳過已處理的信件）
-python sync_now.py --live
-
 # 同上，並用 Brave Search 補充飯店資訊
-python sync_now.py --live --enrich
+python sync_now.py --enrich
 
 # 清空處理記錄，重新處理全部信件
-python sync_now.py --live --reset
+python sync_now.py --reset
 ```
 
 **第一次執行**會開啟瀏覽器要求 Google OAuth 授權，完成後 `token.json` 會自動儲存，之後不需要重新授權。
@@ -91,7 +89,25 @@ python sync_now.py --live --reset
 
 ## 行事曆
 
+### Google Calendar（預設）
+
 第一次寫入時會自動建立名為 **G2C AI Sync** 的專用行事曆。若要清空重來，直接在 Google Calendar 刪除整個行事曆即可，不影響其他行事曆。
+
+### Synology CalDAV（選用）
+
+若有 Synology NAS 並已安裝 Calendar 套件，可改寫入自家 NAS，行程資料不經過 Google。在 `.env` 設定：
+
+```
+SYNC_TARGET=caldav
+CALDAV_URL=http://<NAS_IP>:5000/caldav/<帳號>/
+CALDAV_USERNAME=你的帳號
+CALDAV_PASSWORD=你的密碼
+CALDAV_CALENDAR=My Calendar
+```
+
+也可以用 Tailscale 或反向代理連接 NAS，不需要開放外部 port。
+
+> **未來規劃**：信件端目前仍走 Gmail，Google 在信件層仍可見行程資訊。完整脫離 Google 需要將機票、訂房信導向隱私信箱（如 Proton Mail），再從 IMAP 抓取，這部分尚未實作。
 
 ---
 

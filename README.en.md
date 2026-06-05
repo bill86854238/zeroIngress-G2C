@@ -39,7 +39,8 @@ Designed for travel itineraries (flights, hotels, car rentals, airport transfers
 ```bash
 pip install google-auth google-auth-oauthlib google-auth-httplib2 \
             google-api-python-client pydantic python-dotenv \
-            beautifulsoup4 python-dateutil requests
+            beautifulsoup4 python-dateutil requests \
+            caldav icalendar
 ```
 
 ---
@@ -61,20 +62,17 @@ BRAVE_API_KEY=your_brave_search_api_key
 ## Usage
 
 ```bash
-# Dry run — parse emails but do not write to calendar
+# Incremental write — default behaviour, skips already-processed emails
 python sync_now.py
 
-# Output an HTML preview to preview.html and open it in the browser
+# Output an HTML preview to preview.html and open it in the browser (no write)
 python sync_now.py --preview
 
-# Incremental write — skip already-processed emails
-python sync_now.py --live
-
-# Same as above, plus Brave Search enrichment for hotel info
-python sync_now.py --live --enrich
+# Same as default, plus Brave Search enrichment for hotel info
+python sync_now.py --enrich
 
 # Reset processed-email log and reprocess everything
-python sync_now.py --live --reset
+python sync_now.py --reset
 ```
 
 The **first run** will open a browser for Google OAuth consent. After authorising, `token.json` is saved automatically and subsequent runs will not require re-authorisation.
@@ -83,7 +81,25 @@ The **first run** will open a browser for Google OAuth consent. After authorisin
 
 ## Calendar
 
+### Google Calendar (default)
+
 The first write creates a dedicated calendar named **G2C AI Sync**. To start fresh, delete the calendar in Google Calendar — your other calendars are not affected.
+
+### Synology CalDAV (optional)
+
+If you have a Synology NAS with the Calendar package installed, you can write events there instead — keeping your itinerary data off Google. Set the following in `.env`:
+
+```
+SYNC_TARGET=caldav
+CALDAV_URL=http://<NAS_IP>:5000/caldav/<username>/
+CALDAV_USERNAME=your_username
+CALDAV_PASSWORD=your_password
+CALDAV_CALENDAR=My Calendar
+```
+
+Tailscale or a reverse proxy work fine — no open ports required.
+
+> **Future direction**: Email is still fetched from Gmail, so Google retains visibility at the message layer. Fully removing Google from the pipeline would require routing booking/flight confirmation emails to a privacy-focused inbox (e.g. Proton Mail) and fetching via IMAP instead. Not yet implemented.
 
 ---
 
