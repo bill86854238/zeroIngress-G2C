@@ -522,6 +522,112 @@ def brave_enrich(event: "CalendarEvent") -> str:
         return ""
 
 
+WEATHER_CONDITION_MAP = {
+    0: "晴天", 1: "大致晴天", 2: "部分多雲", 3: "陰天",
+    45: "霧", 48: "霧淞",
+    51: "小毛毛雨", 53: "毛毛雨", 55: "大毛毛雨",
+    61: "小雨", 63: "中雨", 65: "大雨",
+    71: "小雪", 73: "中雪", 75: "大雪",
+    80: "小陣雨", 81: "中陣雨", 82: "大陣雨",
+    95: "雷雨", 96: "雷雨夾冰雹", 99: "強雷雨夾冰雹",
+}
+
+
+WEATHER_PENDING_FILE = "weather_pending.json"
+
+
+def _load_weather_pending() -> list[dict]:
+    if not os.path.exists(WEATHER_PENDING_FILE):
+        return []
+    try:
+        with open(WEATHER_PENDING_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_weather_pending(records: list[dict]):
+    with open(WEATHER_PENDING_FILE, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+
+
+def _add_weather_pending(record: dict):
+    records = _load_weather_pending()
+    # Avoid duplicate by cal_event_id
+    if not any(r.get("cal_event_id") == record.get("cal_event_id") for r in records):
+        records.append(record)
+        _save_weather_pending(records)
+
+
+def fetch_weather(location: str, date_str: str) -> str | None:
+    """Return weather summary string, empty string on API failure, or None if date is out of range (should be retried later)."""
+    if not location:
+        return ""
+
+    # Only fetch weather for dates within the 16-day forecast window
+    try:
+        event_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        today = datetime.now(TAIPEI_TZ).date()
+        delta = (event_date - today).days
+        if delta < 0 or delta > 15:
+            return None  # Signal: out of range, caller should record as pending
+    except ValueError:
+        return ""
+
+    # Extract a city-level query from location (strip "→" routes, take destination)
+    city_query = location
+    if "→" in location:
+        city_query = location.split("→")[-1].strip()
+    # Strip airport terminal codes like "T1", "T2"
+    city_query = re.sub(r'\bT\d\b', '', city_query).strip()
+
+    try:
+        geo_resp = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": city_query, "count": 1, "language": "zh", "format": "json"},
+            timeout=8,
+        )
+        geo_resp.raise_for_status()
+        results = geo_resp.json().get("results")
+        if not results:
+            return ""
+        lat = results[0]["latitude"]
+        lon = results[0]["longitude"]
+        resolved_name = results[0].get("name", city_query)
+    except Exception:
+        return ""
+
+    try:
+        wx_resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum",
+                "timezone": "Asia/Taipei",
+                "start_date": date_str,
+                "end_date": date_str,
+                "forecast_days": 16,
+            },
+            timeout=8,
+        )
+        wx_resp.raise_for_status()
+        daily = wx_resp.json().get("daily", {})
+        codes = daily.get("weathercode", [])
+        t_max = daily.get("temperature_2m_max", [])
+        t_min = daily.get("temperature_2m_min", [])
+        precip = daily.get("precipitation_sum", [])
+        if not codes:
+            return ""
+        condition = WEATHER_CONDITION_MAP.get(int(codes[0]), f"天氣代碼 {codes[0]}")
+        hi = f"{t_max[0]:.0f}" if t_max else "?"
+        lo = f"{t_min[0]:.0f}" if t_min else "?"
+        rain = f"{precip[0]:.1f}" if precip else "?"
+        return f"🌤 {resolved_name} 天氣：{condition}，{lo}～{hi}°C，降雨 {rain}mm"
+    except Exception:
+        return ""
+
+
 def _flight_number(title: str) -> str | None:
     """Extract flight number like BR166, JL98, JX838 from title."""
     m = re.search(r'\b([A-Z]{2})\s*(\d{2,4})\b', title)
@@ -576,20 +682,21 @@ def get_caldav_calendar():
     raise RuntimeError(f"CalDAV calendar '{CALDAV_CALENDAR}' not found on {CALDAV_URL}")
 
 
-def insert_event_caldav(cal: "caldav.Calendar", event: CalendarEvent):
+def insert_event_caldav(cal: "caldav.Calendar", event: CalendarEvent) -> str:
+    """Insert event and return the UID (used for weather pending patch)."""
     import uuid
+    uid = str(uuid.uuid4())
     ical = iCalendar()
     ical.add("prodid", "-//G2C AI Sync//EN")
     ical.add("version", "2.0")
 
     ievent = iEvent()
-    ievent.add("uid", str(uuid.uuid4()))
+    ievent.add("uid", uid)
     ievent.add("summary", event.title)
     ievent.add("location", event.location)
     ievent.add("description", event.description)
 
     if event.is_all_day:
-        from datetime import date as date_type
         start_date = dateutil_parser.parse(event.start).date()
         end_date   = dateutil_parser.parse(event.end).date()
         ievent.add("dtstart", start_date)
@@ -601,9 +708,23 @@ def insert_event_caldav(cal: "caldav.Calendar", event: CalendarEvent):
     ievent.add("dtstamp", datetime.now(timezone.utc))
     ical.add_component(ievent)
     cal.save_event(ical.to_ical())
+    return uid
 
 
-def insert_event(service, calendar_id: str, event: CalendarEvent):
+def patch_event_caldav(cal: "caldav.Calendar", uid: str, new_description: str):
+    """Patch description of an existing CalDAV event by UID."""
+    for ev in cal.events():
+        cal_obj = iCalendar.from_ical(ev.data)
+        for component in cal_obj.walk():
+            if component.name == "VEVENT" and str(component.get("uid", "")) == uid:
+                component["description"] = new_description
+                ev.data = cal_obj.to_ical()
+                ev.save()
+                return
+
+
+def insert_event(service, calendar_id: str, event: CalendarEvent) -> str:
+    """Insert event and return the Google Calendar event id."""
     if event.is_all_day:
         start_val = {"date": event.start[:10]}
         # Google Calendar all-day end is exclusive, so add one extra day
@@ -620,7 +741,60 @@ def insert_event(service, calendar_id: str, event: CalendarEvent):
         "start": start_val,
         "end":   end_val,
     }
-    service.events().insert(calendarId=calendar_id, body=body).execute()
+    result = service.events().insert(calendarId=calendar_id, body=body).execute()
+    return result["id"]
+
+
+def patch_event_google(service, calendar_id: str, event_id: str, new_description: str):
+    """Patch description of an existing Google Calendar event."""
+    service.events().patch(
+        calendarId=calendar_id,
+        eventId=event_id,
+        body={"description": new_description},
+    ).execute()
+
+
+# ── Weather Pending Retry ────────────────────────────────────────────────────
+
+def retry_pending_weather(cal_svc=None, caldav_cal=None, calendar_id: str = ""):
+    """Check weather_pending.json and patch calendar events whose dates are now within forecast range."""
+    records = _load_weather_pending()
+    if not records:
+        return
+
+    remaining = []
+    patched = 0
+    for rec in records:
+        weather = fetch_weather(rec["location"], rec["date"])
+        if weather is None:
+            # Still out of range
+            remaining.append(rec)
+            continue
+        if not weather:
+            # API failed, keep retrying next time
+            remaining.append(rec)
+            continue
+
+        new_desc = (rec.get("description_base", "") + "\n\n" + weather).strip()
+        target = rec.get("target", "google")
+        try:
+            if target == "caldav" and caldav_cal:
+                patch_event_caldav(caldav_cal, rec["cal_event_id"], new_desc)
+            elif target != "caldav" and cal_svc:
+                cal_id = rec.get("calendar_id") or calendar_id
+                patch_event_google(cal_svc, cal_id, rec["cal_event_id"], new_desc)
+            else:
+                remaining.append(rec)
+                continue
+            print(f"  [Weather-Patch] {rec['title']}：{weather}")
+            patched += 1
+        except Exception as e:
+            print(f"  [Weather-Patch] 失敗 {rec['title']} — {e}")
+            remaining.append(rec)
+
+    _save_weather_pending(remaining)
+    if patched:
+        print(f"[Weather-Pending] 補查完成，已更新 {patched} 個事件，剩餘 {len(remaining)} 個待補")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -726,6 +900,22 @@ def main():
     gmail_svc = build("gmail", "v1", credentials=creds)
     cal_svc   = build("calendar", "v3", credentials=creds)
 
+    # Retry weather for previously pending events (live only — needs real calendar access)
+    if live and os.path.exists(WEATHER_PENDING_FILE):
+        pending_cal_id = None
+        pending_caldav = None
+        if target == "caldav" and CALDAV_URL:
+            try:
+                pending_caldav = get_caldav_calendar()
+            except Exception:
+                pass
+        else:
+            try:
+                pending_cal_id = get_or_create_calendar(cal_svc)
+            except Exception:
+                pass
+        retry_pending_weather(cal_svc=cal_svc, caldav_cal=pending_caldav, calendar_id=pending_cal_id or "")
+
     print("\n[Fetching] Scanning Gmail for travel-related emails...")
     emails = fetch_candidate_emails(gmail_svc)
 
@@ -786,10 +976,23 @@ def main():
                     })
                     print(f"  [Brave] enriched: {event.title}")
 
+            # Weather enrichment for any event with a location (free, no API key)
+            weather_pending_needed = False
+            if event.location:
+                weather = fetch_weather(event.location, event.start[:10])
+                if weather is None:
+                    weather_pending_needed = True
+                    print(f"  [Weather] {event.start[:10]} 超出預報範圍，將於日期接近時自動補查")
+                elif weather:
+                    event = event.model_copy(update={
+                        "description": (event.description + "\n\n" + weather).strip()
+                    })
+                    print(f"  [Weather] {weather}")
+
             tag = "全天" if event.is_all_day else event.start[11:16]
             warning = _check_suspicious(email, event)
             status = "suspicious" if warning else "ok"
-            events_data.append({"status": status, "subject": email["subject"], "msg_id": email["id"], "event": event, "reason": warning or ""})
+            events_data.append({"status": status, "subject": email["subject"], "msg_id": email["id"], "event": event, "reason": warning or "", "weather_pending": weather_pending_needed})
             flag = " [!]" if warning else ""
             print(f"  [DRY-RUN] {event.title} | {event.start[:10]} {tag}{flag}")
 
@@ -825,11 +1028,22 @@ def main():
             event = item["event"]
             try:
                 if target == "caldav":
-                    insert_event_caldav(caldav_cal, event)
+                    cal_event_id = insert_event_caldav(caldav_cal, event)
                 else:
-                    insert_event(cal_svc, calendar_id, event)
+                    cal_event_id = insert_event(cal_svc, calendar_id, event)
                 print(f"  [OK] Inserted: {event.title}")
                 _save_processed(item["msg_id"])
+                if item.get("weather_pending") and event.location:
+                    _add_weather_pending({
+                        "title": event.title,
+                        "location": event.location,
+                        "date": event.start[:10],
+                        "target": target,
+                        "cal_event_id": cal_event_id,
+                        "calendar_id": calendar_id if target != "caldav" else None,
+                        "description_base": event.description,
+                    })
+                    print(f"  [Weather-Pending] 記錄至 weather_pending.json，待日期接近自動補查")
             except Exception as e:
                 print(f"  [ERROR] Calendar insert failed — {e}")
                 results["success"] -= 1
