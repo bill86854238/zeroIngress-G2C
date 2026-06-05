@@ -48,11 +48,22 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 KEYWORDS = [
+    # 交通
     "高鐵", "台鐵", "train", "hsr",
     "機票", "航班", "flight", "airline", "boarding",
+    "租車", "car rental",
+    # 住宿
     "飯店", "hotel", "旅館", "hostel", "check-in", "check in",
     "訂房", "booking", "reservation",
+    # 行程
     "itinerary", "行程",
+    # 活動票券
+    "演唱會", "concert", "展覽", "exhibition", "票券", "ticket",
+    "入場券", "門票",
+    # 醫療預約
+    "看診", "門診", "掛號", "預約", "appointment",
+    # 餐廳訂位
+    "訂位", "餐廳預約",
 ]
 
 BLOCKED_SENDERS = [

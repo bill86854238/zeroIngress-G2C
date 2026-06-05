@@ -1,18 +1,18 @@
 # zeroIngress-G2C
 
-本地端 Gmail → Google Calendar 自動同步工具。從 Gmail 篩選旅遊相關信件，用本地 Ollama LLM 解析出行程資訊，寫入 Google Calendar 的專用行事曆。
+本地端 Gmail 自動解析信件並同步到 Google Calendar，使用 Ollama 本地 LLM，資料完全在本機處理，不經過任何第三方雲端服務。
 
-所有資料在本地處理，不經過任何第三方雲端服務。
+預設支援旅遊行程（機票、飯店、租車、機場接送），也可自行擴充關鍵字支援演唱會、醫療預約、餐廳訂位等任何有時間資訊的信件。
 
 ---
 
 ## 功能
 
-- 自動篩選機票、飯店、租車、機場接送等旅遊信件
+- 自動篩選 Gmail 信件，依關鍵字比對
 - 支援去程/回程航班自動拆分
-- 飯店事件自動設定為全天跨日事件
-- 重複事件去重（同航班號、同日期飯店）
-- 可疑幻覺自動標記（`--preview` 模式橘色警告）
+- 全天事件自動跨日（飯店入住到退房）
+- 重複事件去重（同航班號、同日期）
+- 可疑解析結果自動標記（橘色警告，不寫入行事曆）
 - 增量同步：已處理信件自動跳過，不重複寫入
 - 選用 Brave Search API 補充飯店 check-in 時間與地址
 
@@ -23,14 +23,14 @@
 ### 本地環境
 
 - Python 3.11+
-- [Ollama](https://ollama.com) 0.30.4+，已拉取 `qwen3.6:35b-a3b`（或其他支援 structured output 的模型）
+- [Ollama](https://ollama.com) 0.30.4+，已拉取支援 structured output 的模型（建議 `qwen3.6:35b-a3b` 或 `gemma4:e4b`）
 
 ### Google Cloud
 
 1. 在 [Google Cloud Console](https://console.cloud.google.com/) 建立或選擇一個專案
 2. 啟用 **Gmail API** 與 **Google Calendar API**
 3. 建立 OAuth 2.0 憑證（類型選「桌面應用程式」）
-4. 下載 `credentials.json`，檔名格式為 `client_secret_*.json`，放到專案目錄
+4. 下載憑證檔，檔名格式為 `client_secret_*.json`，放到專案目錄
 
 ---
 
@@ -49,11 +49,11 @@ pip install google-auth google-auth-oauthlib google-auth-httplib2 \
 在專案目錄建立 `.env`：
 
 ```
-BRAVE_API_KEY=你的_Brave_Search_API_Key
 MY_EMAIL=你的_Gmail_地址
+BRAVE_API_KEY=你的_Brave_Search_API_Key
 ```
 
-- `MY_EMAIL`：你的 Gmail 帳號，用來過濾掉自己寄出的信，避免誤判
+- `MY_EMAIL`：你的 Gmail 帳號，用來過濾掉自己寄出的信
 - `BRAVE_API_KEY`：選填。可在 [Brave Search API](https://brave.com/search/api/) 申請，免費方案每月 2000 次查詢。未設定或不加 `--enrich` 時，Brave 功能完全不啟用
 
 ---
@@ -87,21 +87,34 @@ python sync_now.py --live --reset
 
 ---
 
+## 自訂關鍵字
+
+編輯 `sync_now.py` 裡的 `KEYWORDS` 清單，可新增任何觸發詞：
+
+```python
+KEYWORDS = [
+    "機票", "航班", "飯店", "hotel", "booking",  # 預設旅遊關鍵字
+    "演唱會", "看診", "訂位",                      # 自行新增
+]
+```
+
+---
+
 ## 篩選邏輯
 
-**關鍵字篩選**：高鐵、台鐵、機票、航班、飯店、hotel、booking、reservation 等
+**關鍵字篩選**：比對信件主旨與內文
 
 **自動排除**：
 - 取消通知信
 - 登機提醒信（無完整行程資料）
-- Re:/Fw: 開頭的 thread 回信
-- 銀行帳單等非旅遊信件
+- Re:/Fw: 開頭的往返信件
+- 銀行帳單等非行程信件
 - 自己寄出的信
 
 ---
 
 ## 注意事項
 
-- `token.json` 與 `client_secret_*.json` 含有個人 Google 帳號憑證，**絕對不要上傳到公開 repo**
+- `token.json` 與 `client_secret_*.json` 含有個人 Google 帳號憑證，**不要上傳到公開 repo**
 - `processed.log` 記錄已處理的信件 ID，刪除後下次跑會重新處理全部信件
 - LLM 解析結果可能有誤，建議先用 `--preview` 確認後再 `--live`
