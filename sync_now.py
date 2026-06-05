@@ -77,7 +77,7 @@ DUPLICATE_SUBJECT_SENDER = [
     ("amadeus.com", "emd receipt"),
 ]
 
-MY_EMAIL = "bill86854238@gmail.com"
+MY_EMAIL = os.getenv("MY_EMAIL", "")
 
 CANCEL_KEYWORDS = ["已取消", "cancelled", "canceled", "キャンセル", "取消", "cancellation"]
 

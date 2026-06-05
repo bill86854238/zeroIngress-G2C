@@ -50,9 +50,11 @@ pip install google-auth google-auth-oauthlib google-auth-httplib2 \
 
 ```
 BRAVE_API_KEY=你的_Brave_Search_API_Key
+MY_EMAIL=你的_Gmail_地址
 ```
 
-Brave API Key 可在 [Brave Search API](https://brave.com/search/api/) 申請，免費方案每月 2000 次查詢。若不需要飯店資訊補充，`.env` 可為空。
+- `MY_EMAIL`：你的 Gmail 帳號，用來過濾掉自己寄出的信，避免誤判
+- `BRAVE_API_KEY`：可在 [Brave Search API](https://brave.com/search/api/) 申請，免費方案每月 2000 次查詢。若不需要飯店資訊補充可留空
 
 ---
 
