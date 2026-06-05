@@ -14,6 +14,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 import requests
+import caldav
 from bs4 import BeautifulSoup
 from dateutil import parser as dateutil_parser
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from icalendar import Calendar as iCalendar, Event as iEvent
 from pydantic import BaseModel, ValidationError
 
 load_dotenv()
@@ -46,6 +48,11 @@ BASE_YEAR = 2026
 MAX_BODY_CHARS = 3000
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+
+CALDAV_URL      = os.getenv("CALDAV_URL", "")
+CALDAV_USERNAME = os.getenv("CALDAV_USERNAME", "")
+CALDAV_PASSWORD = os.getenv("CALDAV_PASSWORD", "")
+CALDAV_CALENDAR = os.getenv("CALDAV_CALENDAR", "My Calendar")
 
 KEYWORDS = [
     # 交通
@@ -556,6 +563,46 @@ def get_or_create_calendar(service) -> str:
     return new_cal["id"]
 
 
+def get_caldav_calendar():
+    client = caldav.DAVClient(
+        url=CALDAV_URL,
+        username=CALDAV_USERNAME,
+        password=CALDAV_PASSWORD,
+    )
+    principal = client.principal()
+    for cal in principal.calendars():
+        if cal.get_display_name() == CALDAV_CALENDAR:
+            return cal
+    raise RuntimeError(f"CalDAV calendar '{CALDAV_CALENDAR}' not found on {CALDAV_URL}")
+
+
+def insert_event_caldav(cal: "caldav.Calendar", event: CalendarEvent):
+    import uuid
+    ical = iCalendar()
+    ical.add("prodid", "-//G2C AI Sync//EN")
+    ical.add("version", "2.0")
+
+    ievent = iEvent()
+    ievent.add("uid", str(uuid.uuid4()))
+    ievent.add("summary", event.title)
+    ievent.add("location", event.location)
+    ievent.add("description", event.description)
+
+    if event.is_all_day:
+        from datetime import date as date_type
+        start_date = dateutil_parser.parse(event.start).date()
+        end_date   = dateutil_parser.parse(event.end).date()
+        ievent.add("dtstart", start_date)
+        ievent.add("dtend",   end_date)
+    else:
+        ievent.add("dtstart", dateutil_parser.parse(event.start))
+        ievent.add("dtend",   dateutil_parser.parse(event.end))
+
+    ievent.add("dtstamp", datetime.now(timezone.utc))
+    ical.add_component(ievent)
+    cal.save_event(ical.to_ical())
+
+
 def insert_event(service, calendar_id: str, event: CalendarEvent):
     if event.is_all_day:
         start_val = {"date": event.start[:10]}
@@ -643,14 +690,18 @@ def generate_preview_html(events_data: list[dict], output_path: str = "preview.h
 
 
 def main():
-    live    = "--live" in sys.argv
     preview = "--preview" in sys.argv
+    live    = not preview
     enrich  = "--enrich" in sys.argv
     reset   = "--reset" in sys.argv  # clear processed.log and reprocess all
+    target  = "caldav" if "--target=caldav" in sys.argv else os.getenv("SYNC_TARGET", "google")
 
     if live:
         print("=" * 60)
-        print("  LIVE MODE — events will be written to Google Calendar")
+        if target == "caldav":
+            print("  LIVE MODE — events will be written to Synology CalDAV")
+        else:
+            print("  LIVE MODE — events will be written to Google Calendar")
         if enrich:
             print("  + Brave enrichment ON")
         print("=" * 60)
@@ -658,11 +709,11 @@ def main():
         print("[Preview] Will generate preview.html after processing...")
     else:
         print("=" * 60)
-        print("  模擬執行模式 — 不會寫入 Google Calendar")
-        print("  --preview   輸出 HTML 預覽")
-        print("  --live      實際寫入行事曆")
-        print("  --enrich    搭配 --live，用 Brave Search 補充飯店資訊")
-        print("  --reset     清除處理記錄，重新處理全部信件")
+        print("  預設直接寫入行事曆")
+        print("  --preview          輸出 HTML 預覽（不寫入）")
+        print("  --target=caldav    覆蓋寫入目標為 Synology CalDAV")
+        print("  --enrich           用 Brave Search 補充飯店資訊")
+        print("  --reset            清除處理記錄，重新處理全部信件")
         print("=" * 60)
 
     if reset and os.path.exists(PROCESSED_LOG):
@@ -692,9 +743,14 @@ def main():
 
     print(f"[Found] {len(emails)} new candidate email(s)\n")
 
-    calendar_id = None
+    calendar_id  = None
+    caldav_cal   = None
     if live:
-        calendar_id = get_or_create_calendar(cal_svc)
+        if target == "caldav":
+            caldav_cal = get_caldav_calendar()
+            print(f"[Calendar] Using CalDAV: {CALDAV_CALENDAR} @ {CALDAV_URL}")
+        else:
+            calendar_id = get_or_create_calendar(cal_svc)
 
     results = {"success": 0, "skipped": 0, "failed": 0}
     failed_subjects = []
@@ -768,7 +824,10 @@ def main():
                 continue
             event = item["event"]
             try:
-                insert_event(cal_svc, calendar_id, event)
+                if target == "caldav":
+                    insert_event_caldav(caldav_cal, event)
+                else:
+                    insert_event(cal_svc, calendar_id, event)
                 print(f"  [OK] Inserted: {event.title}")
                 _save_processed(item["msg_id"])
             except Exception as e:
