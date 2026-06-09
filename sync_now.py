@@ -476,6 +476,44 @@ def _is_hotel_event(event: "CalendarEvent") -> bool:
     return any(k.lower() in event.title.lower() for k in hotel_keywords)
 
 
+def _is_car_rental_event(event: "CalendarEvent") -> bool:
+    car_keywords = ["租車", "car rental", "rent a car", "レンタカー"]
+    return any(k.lower() in event.title.lower() for k in car_keywords)
+
+
+def _has_parking_info(event: "CalendarEvent") -> bool:
+    text = (event.description + event.title).lower()
+    return any(k in text for k in ["停車", "parking", "駐車", "car park", "valet", "泊車"])
+
+
+def _enrich_hotel_parking(events_data: list[dict]):
+    """Add parking reminders and car rental cross-reference notes to hotel events. Mutates events_data in place."""
+    ok_items = [item for item in events_data if item.get("status") == "ok" and item.get("event")]
+    hotel_items = [item for item in ok_items if _is_hotel_event(item["event"])]
+    rental_items = [item for item in ok_items if _is_car_rental_event(item["event"])]
+
+    for hotel_item in hotel_items:
+        hotel = hotel_item["event"]
+        has_parking = _has_parking_info(hotel)
+        has_rental = any(
+            dateutil_parser.parse(hotel.start) < dateutil_parser.parse(r["event"].end)
+            and dateutil_parser.parse(r["event"].start) < dateutil_parser.parse(hotel.end)
+            for r in rental_items
+        )
+
+        note = ""
+        if not has_parking and has_rental:
+            note = "🚗 行程含租車，尚未確認飯店停車安排，請提前確認停車費用"
+        elif not has_parking:
+            note = "⚠️ 尚未確認停車安排"
+        elif has_rental:
+            note = "🚗 行程含租車，請確認飯店停車費用是否已含在預訂中"
+
+        if note:
+            new_desc = (hotel.description + "\n\n" + note).strip() if hotel.description else note
+            hotel_item["event"] = hotel.model_copy(update={"description": new_desc})
+
+
 def brave_enrich(event: "CalendarEvent") -> str:
     """Query Brave Search for hotel check-in time and address, return enrichment string."""
     if not BRAVE_API_KEY or not _is_hotel_event(event):
@@ -795,6 +833,9 @@ def main():
 
     # Dedup before preview/insert
     events_data = _dedup_events(events_data)
+
+    # 停車提醒 + 租車交叉比對
+    _enrich_hotel_parking(events_data)
 
     # Recount after dedup
     results = {"success": 0, "skipped": 0, "failed": 0, "suspicious": 0}

@@ -174,6 +174,9 @@ function syncEmails() {
     // 去重
     const deduped = _dedupEvents(eventsData);
 
+    // 停車提醒 + 租車交叉比對
+    _enrichHotelParking(deduped);
+
     // 寫入行事曆
     let successCount = 0;
     let skipCount = 0;
@@ -518,6 +521,58 @@ function _insertEventViaApi(calendarId, event) {
   const resp = UrlFetchApp.fetch(url, options);
   if (resp.getResponseCode() !== 200) {
     throw new Error(`Calendar API 回傳 ${resp.getResponseCode()}: ${resp.getContentText().substring(0, 200)}`);
+  }
+}
+
+// ── 停車資訊強化 ───────────────────────────────────────────────────────────────
+
+function _isHotelEvent(event) {
+  const t = (event.title || "").toLowerCase();
+  return ["入住", "飯店", "旅館", "hotel", "hostel", "inn", "check-in"].some(kw => t.includes(kw));
+}
+
+function _isCarRentalEvent(event) {
+  const t = (event.title || "").toLowerCase();
+  return ["租車", "car rental", "rent a car", "レンタカー"].some(kw => t.includes(kw));
+}
+
+function _hasParkingInfo(event) {
+  const text = ((event.description || "") + (event.title || "")).toLowerCase();
+  return ["停車", "parking", "駐車", "car park", "valet", "泊車"].some(kw => text.includes(kw));
+}
+
+function _datesOverlap(a, b) {
+  return new Date(a.start) < new Date(b.end) && new Date(b.start) < new Date(a.end);
+}
+
+/**
+ * 為飯店事件補充停車提醒與租車交叉比對備註
+ * 直接修改 eventsData 中的 event.description，無回傳值
+ */
+function _enrichHotelParking(eventsData) {
+  const okItems = eventsData.filter(item => item.status === "ok" && item.event);
+  const hotelItems = okItems.filter(item => _isHotelEvent(item.event));
+  const rentalItems = okItems.filter(item => _isCarRentalEvent(item.event));
+
+  for (const hotelItem of hotelItems) {
+    const hotel = hotelItem.event;
+    const hasParking = _hasParkingInfo(hotel);
+    const hasRental = rentalItems.some(r => _datesOverlap(hotel, r.event));
+
+    let note = "";
+    if (!hasParking && hasRental) {
+      note = "🚗 行程含租車，尚未確認飯店停車安排，請提前確認停車費用";
+    } else if (!hasParking) {
+      note = "⚠️ 尚未確認停車安排";
+    } else if (hasRental) {
+      note = "🚗 行程含租車，請確認飯店停車費用是否已含在預訂中";
+    }
+
+    if (note) {
+      hotel.description = hotel.description
+        ? `${hotel.description}\n\n${note}`
+        : note;
+    }
   }
 }
 
