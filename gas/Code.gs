@@ -312,36 +312,49 @@ must be interpreted relative to ${CONFIG.BASE_YEAR}.
 Extract calendar events from the email. Output ONLY valid JSON with these exact keys:
 
 - title: descriptive event name. Follow these rules:
-  * For flights: include airline name, flight number, and route. Format: "長榮航空 BR801 — 桃園T2 → 札幌新千歲"
-  * For car rentals: include vendor and pickup location. Format: "Times 租車 — 旭川站前"
-  * For hotels: include hotel name. Format: "Dormy Inn PREMIUM Kushiro 入住"
-  * For transfers/shuttles: include service and route. Format: "Klook 送機 — 樹林→桃園T1"
+  * Flights: airline name + flight number + route. e.g. "長榮航空 BR801 — 桃園T2 → 札幌新千歲"
+  * Car rentals: vendor + pickup location. e.g. "Times 租車 — 旭川站前"
+  * Hotels: hotel name + 入住. e.g. "Dormy Inn PREMIUM Kushiro 入住"
+  * Transfers: service + route. e.g. "Klook 送機 — 樹林→桃園T1"
   * Always use Traditional Chinese where possible.
 
-- start: ISO 8601 datetime with timezone +08:00 (e.g. "${CONFIG.BASE_YEAR}-06-22T10:30:00+08:00").
-  * For flights: use departure time.
-  * If only a date is known with no time, use T00:00:00+08:00.
+- start / end: ISO 8601 datetime using the LOCAL timezone of the event location.
+  * Taiwan: +08:00 | Japan (all cities/airports): +09:00 | Korea: +09:00
+  * Thailand / Vietnam / Cambodia / Laos: +07:00 | Singapore / Malaysia / Philippines: +08:00
+  * Indonesia (Bali/Lombok): +08:00 | Indonesia (Java/Sumatra): +07:00
+  * For FLIGHTS: start uses departure airport local timezone; end uses arrival airport local timezone.
+    Example Taipei(TPE/TSA)→Sapporo(CTS): start "${CONFIG.BASE_YEAR}-06-22T10:30:00+08:00", end "${CONFIG.BASE_YEAR}-06-22T14:40:00+09:00"
+  * For HOTELS: start = check-in date + check-in time from email (in hotel's local timezone).
+                If check-in time not stated in email, use T15:00:00.
+                end = check-out date + check-out time from email (in hotel's local timezone).
+                If check-out time not stated in email, use T12:00:00.
+  * For other events with no known time: use T00:00:00 in the event's local timezone.
 
-- end: ISO 8601 datetime with timezone +08:00.
-  * For flights: use arrival time at destination. If not stated, estimate based on typical route duration.
-  * For hotels: use the CHECKOUT date (not check-in date) at T00:00:00+08:00. The end date MUST be different from start date.
-  * For car rentals: use the return date at the return time.
-  * If only a date is known, use T00:00:00+08:00.
+- location:
+  * Flights: "出發航廈 → 目的地機場" — must match the actual direction of this flight leg.
+  * Hotels: hotel name only (do NOT add street address — name gives better Google Maps results).
+  * Car rentals: pickup location name.
+  * Transfers: pickup address → drop-off address.
 
-- location: specific and useful location string.
-  * For flights: "出發航廈 → 目的地機場" — MUST match the actual direction of THIS flight leg
-  * For hotels: city name or hotel address
-  * For car rentals: pickup location name/address
-  * For transfers: pickup address → drop-off address
-
-- description: concise summary in Traditional Chinese only (no other languages). 2~4 lines max.
+- description: Traditional Chinese only. Include ONLY information explicitly present in the email; omit any field not found.
+  * Flights: 航班號、座位、訂位代號
+  * Hotels — only include lines where data is actually in the email:
+    入住：[date + time]（if using default T15:00:00, append「時間預設，請確認」）
+    退房：[date + time]（if using default T12:00:00, append「時間預設，請確認」）
+    訂房號碼：[if in email]
+    房型：[if in email]
+    餐飲：[if in email, e.g. 含早餐 / 一泊二食 / 含早晚餐]
+    [any other relevant details present in the email]
+  * Car rentals: 車型、取還車地點與時間、訂單號
+  * Transfers: 接送地址、車型、訂單號
 
 IMPORTANT rules:
-- If the email is an EMD receipt, ancillary fee receipt, meal pre-order, Wi-Fi purchase, or check-in reminder without full itinerary details, output empty events array.
-- If the email is a cancellation notice, output empty events array.
-- For flights: extract airline name and flight number ONLY from the flight itinerary table. Never use airline/flight info from signatures or unrelated text.
-- For hotels: only extract check-in dates that are explicitly stated. Do NOT invent additional hotel stays.
-- Each event must be a distinct, real travel segment. Do not duplicate or fabricate events.
+- EMD receipts, ancillary fee receipts, meal pre-orders, Wi-Fi purchases, check-in reminders → {"events": []}
+- Cancellation notices → {"events": []}
+- Flights: extract airline + flight number ONLY from the itinerary table, never from signatures or unrelated text.
+- Hotels: extract ONLY check-in dates explicitly stated. Do NOT invent stays not in the email.
+- Hotels are NEVER all-day events — always use timed start/end (default T15:00:00 / T12:00:00 if times unknown).
+- Each event must be a distinct real travel segment. No duplicates or fabricated events.
 
 Output format: always return a JSON object with an "events" array.
 - Single event: {"events": [{...}]}
@@ -410,11 +423,23 @@ Output format: always return a JSON object with an "events" array.
       data.end = data.end ? _normaliseDt(data.end) : _addOneHour(data.start);
       data.isAllDay = _isMidnight(data.start) && _isMidnight(data.end);
 
+      // 飯店事件不允許全天：若 LLM 違反指令輸出 T00:00:00，強制改回預設時間
+      if (data.isAllDay) {
+        const hotelSignals = ["入住", "hotel", "飯店", "旅館", "hostel", "inn"];
+        if (hotelSignals.some(kw => (data.title || "").toLowerCase().includes(kw))) {
+          data.isAllDay = false;
+          if (/T00:00:00/.test(data.start)) data.start = data.start.replace("T00:00:00", "T15:00:00");
+          if (/T00:00:00/.test(data.end))   data.end   = data.end.replace("T00:00:00", "T12:00:00");
+        }
+      }
+
       // 全天事件：若 start == end 則 end + 1 day
       if (data.isAllDay && data.start.substring(0, 10) === data.end.substring(0, 10)) {
-        const d = new Date(data.end);
-        d.setDate(d.getDate() + 1);
-        data.end = _toIso(d);
+        const [y, mo, d] = data.end.substring(0, 10).split("-").map(Number);
+        const next = new Date(Date.UTC(y, mo - 1, d + 1));
+        const pad = n => String(n).padStart(2, "0");
+        const offset = (data.end.match(/([+-]\d{2}:\d{2})$/) || ["", "+08:00"])[1] || "+08:00";
+        data.end = `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}T00:00:00${offset}`;
       }
 
       // 非全天：確保 end > start
@@ -422,8 +447,7 @@ Output format: always return a JSON object with an "events" array.
         const s = new Date(data.start);
         const e = new Date(data.end);
         if (e <= s) {
-          s.setHours(s.getHours() + 1);
-          data.end = _toIso(s);
+          data.end = _addOneHour(data.start);
         }
       }
 
@@ -452,37 +476,11 @@ function _getOrCreateCalendar() {
 }
 
 function _insertEvent(calendarId, event) {
-  const cal = CalendarApp.getCalendarById(calendarId);
-  if (!cal) throw new Error(`找不到行事曆 ${calendarId}`);
-
-  const startDate = new Date(event.start);
-  const endDate = new Date(event.end);
-
-  const options = {
-    description: event.description || "",
-    location: event.location || "",
-  };
-
-  if (event.isAllDay) {
-    // 全天事件
-    cal.createAllDayEventSeries(
-      event.title,
-      startDate,
-      CalendarApp.newRecurrence().addDailyRule().times(1),
-      options
-    );
-    // 上面的方法會建立重複事件，改用直接方式
-    // GAS 沒有直接 createAllDayEventRange，用 createAllDayEvent + 修改
-    // 實際做法：使用 Calendar REST API
-    _insertEventViaApi(calendarId, event);
-    return;
-  }
-
-  cal.createEvent(event.title, startDate, endDate, options);
+  _insertEventViaApi(calendarId, event);
 }
 
 /**
- * 使用 Calendar REST API 插入事件（支援全天事件與多天範圍）
+ * 使用 Calendar REST API 插入事件（支援全天、多天、跨時區事件）
  */
 function _insertEventViaApi(calendarId, event) {
   let body;
@@ -500,8 +498,8 @@ function _insertEventViaApi(calendarId, event) {
       summary: event.title,
       location: event.location || "",
       description: event.description || "",
-      start: { dateTime: event.start, timeZone: "Asia/Taipei" },
-      end:   { dateTime: event.end,   timeZone: "Asia/Taipei" },
+      start: { dateTime: event.start, timeZone: _timezoneFromOffset(event.start) },
+      end:   { dateTime: event.end,   timeZone: _timezoneFromOffset(event.end) },
     };
   }
 
@@ -606,35 +604,57 @@ function resetProcessed() {
 // ── 日期工具 ───────────────────────────────────────────────────────────────────
 
 function _normaliseDt(dtStr) {
-  // 補上時區：若無 +/Z 則視為 +08:00
+  // 若無時區資訊則預設 +08:00
   if (!/[Z+\-]\d{2}:?\d{2}$/.test(dtStr) && !/Z$/.test(dtStr)) {
     dtStr += "+08:00";
   }
-  const d = new Date(dtStr);
-  if (isNaN(d.getTime())) throw new Error(`無法解析日期: ${dtStr}`);
-  return _toIso(d);
+  if (isNaN(new Date(dtStr).getTime())) throw new Error(`無法解析日期: ${dtStr}`);
+  // 正規化 offset 格式（+0900 → +09:00），保留原始時區
+  return dtStr.replace(/([+-])(\d{2}):?(\d{2})$/, "$1$2:$3");
 }
 
 function _addOneHour(dtStr) {
-  const d = new Date(dtStr);
-  d.setHours(d.getHours() + 1);
-  return _toIso(d);
+  const offsetMatch = dtStr.match(/([+-]\d{2}:\d{2})$/);
+  const offset = offsetMatch ? offsetMatch[1] : "+08:00";
+  const sign = offset[0] === "+" ? 1 : -1;
+  const offsetMins = sign * (parseInt(offset.slice(1, 3)) * 60 + parseInt(offset.slice(4)));
+  const newUtcMs = new Date(dtStr).getTime() + 3600000;
+  const local = new Date(newUtcMs + offsetMins * 60000);
+  const pad = n => String(n).padStart(2, "0");
+  return `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}${offset}`;
 }
 
 function _isMidnight(dtStr) {
-  const d = new Date(dtStr);
-  // 在 +08:00 時區中是否為 00:00:00
-  const utcOffset = 8 * 60; // minutes
-  const localMinutes = (d.getUTCHours() * 60 + d.getUTCMinutes() + utcOffset) % (24 * 60);
-  return localMinutes === 0 && d.getUTCSeconds() === 0;
+  return /T00:00:00/.test(dtStr);
 }
 
-function _toIso(d) {
-  // 回傳帶 +08:00 的 ISO 字串
-  const pad = n => String(n).padStart(2, "0");
-  const offset = 8 * 60;
-  const local = new Date(d.getTime() + offset * 60000);
-  return `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}+08:00`;
+function _timezoneFromOffset(isoStr) {
+  const m = isoStr.match(/([+-]\d{2}:\d{2})$/);
+  if (!m) return "Asia/Taipei";
+  const map = {
+    "+00:00": "UTC",
+    "+01:00": "Europe/Paris",
+    "+02:00": "Europe/Helsinki",
+    "+03:00": "Asia/Riyadh",
+    "+04:00": "Asia/Dubai",
+    "+05:00": "Asia/Karachi",
+    "+05:30": "Asia/Kolkata",
+    "+05:45": "Asia/Kathmandu",
+    "+06:00": "Asia/Dhaka",
+    "+06:30": "Asia/Rangoon",
+    "+07:00": "Asia/Bangkok",
+    "+08:00": "Asia/Taipei",
+    "+09:00": "Asia/Tokyo",
+    "+09:30": "Australia/Darwin",
+    "+10:00": "Australia/Sydney",
+    "+11:00": "Pacific/Noumea",
+    "+12:00": "Pacific/Auckland",
+    "-05:00": "America/New_York",
+    "-06:00": "America/Chicago",
+    "-07:00": "America/Denver",
+    "-08:00": "America/Los_Angeles",
+  };
+  return map[m[1]] || "Asia/Taipei";
 }
 
 // ── 手動工具函式 ────────────────────────────────────────────────────────────────

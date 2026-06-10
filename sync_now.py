@@ -316,43 +316,52 @@ SYSTEM_PROMPT = f"""You are a travel itinerary extraction assistant.
 Today's base year is {BASE_YEAR}. All relative dates (e.g. "this Friday", "next Monday", "06/22")
 must be interpreted relative to {BASE_YEAR}.
 
-Extract ONE primary calendar event from the email. Output ONLY valid JSON with these exact keys:
+Extract calendar events from the email. Output ONLY valid JSON with these exact keys:
 
 - title: descriptive event name. Follow these rules:
-  * For flights: include airline name, flight number, and route. Format: "長榮航空 BR801 — 桃園T2 → 札幌新千歲"
-  * For car rentals: include vendor and pickup location. Format: "Times 租車 — 旭川站前"
-  * For hotels: include hotel name. Format: "Dormy Inn PREMIUM Kushiro 入住"
-  * For transfers/shuttles: include service and route. Format: "Klook 送機 — 樹林→桃園T1"
+  * Flights: airline name + flight number + route. e.g. "長榮航空 BR801 — 桃園T2 → 札幌新千歲"
+  * Car rentals: vendor + pickup location. e.g. "Times 租車 — 旭川站前"
+  * Hotels: hotel name + 入住. e.g. "Dormy Inn PREMIUM Kushiro 入住"
+  * Transfers: service + route. e.g. "Klook 送機 — 樹林→桃園T1"
   * Always use Traditional Chinese where possible.
 
-- start: ISO 8601 datetime with timezone +08:00 (e.g. "{BASE_YEAR}-06-22T10:30:00+08:00").
-  * For flights: use departure time.
-  * If only a date is known with no time, use T00:00:00+08:00.
+- start / end: ISO 8601 datetime using the LOCAL timezone of the event location.
+  * Taiwan: +08:00 | Japan (all cities/airports): +09:00 | Korea: +09:00
+  * Thailand / Vietnam / Cambodia / Laos: +07:00 | Singapore / Malaysia / Philippines: +08:00
+  * Indonesia (Bali/Lombok): +08:00 | Indonesia (Java/Sumatra): +07:00
+  * For FLIGHTS: start uses departure airport local timezone; end uses arrival airport local timezone.
+    Example Taipei(TPE/TSA)→Sapporo(CTS): start "{BASE_YEAR}-06-22T10:30:00+08:00", end "{BASE_YEAR}-06-22T14:40:00+09:00"
+  * For HOTELS: start = check-in date + check-in time from email (in hotel's local timezone).
+                If check-in time not stated in email, use T15:00:00.
+                end = check-out date + check-out time from email (in hotel's local timezone).
+                If check-out time not stated in email, use T12:00:00.
+  * For other events with no known time: use T00:00:00 in the event's local timezone.
 
-- end: ISO 8601 datetime with timezone +08:00.
-  * For flights: use arrival time at destination. If not stated, estimate based on typical route duration.
-  * For hotels: use the CHECKOUT date (not check-in date) at T00:00:00+08:00. The end date MUST be different from start date. e.g. check-in 6/22, checkout 6/24 → start: 2026-06-22T00:00:00+08:00, end: 2026-06-24T00:00:00+08:00.
-  * For car rentals: use the return date at the return time.
-  * If only a date is known, use T00:00:00+08:00.
+- location:
+  * Flights: "出發航廈 → 目的地機場" — must match the actual direction of this flight leg.
+  * Hotels: hotel name only (do NOT add street address — name gives better Google Maps results).
+  * Car rentals: pickup location name.
+  * Transfers: pickup address → drop-off address.
 
-- location: specific and useful location string.
-  * For flights: "出發航廈 → 目的地機場" — MUST match the actual direction of THIS flight leg (e.g. outbound: "桃園T2 → 新千歲", return: "新千歲 → 桃園T2")
-  * For hotels: city name or hotel address
-  * For car rentals: pickup location name/address
-  * For transfers: pickup address → drop-off address
-
-- description: concise summary in Traditional Chinese only (no other languages). 2~4 lines max:
-  * For flights: 航班號、座位、訂位代號
-  * For hotels: 入住/退房日期、房型、訂單號
-  * For car rentals: 車型、取還車地點與時間、訂單號
-  * For transfers: 接送地址、車型、訂單號
+- description: Traditional Chinese only. Include ONLY information explicitly present in the email; omit any field not found.
+  * Flights: 航班號、座位、訂位代號
+  * Hotels — only include lines where data is actually in the email:
+    入住：[date + time]（if using default T15:00:00, append「時間預設，請確認」）
+    退房：[date + time]（if using default T12:00:00, append「時間預設，請確認」）
+    訂房號碼：[if in email]
+    房型：[if in email]
+    餐飲：[if in email, e.g. 含早餐 / 一泊二食 / 含早晚餐]
+    [any other relevant details present in the email]
+  * Car rentals: 車型、取還車地點與時間、訂單號
+  * Transfers: 接送地址、車型、訂單號
 
 IMPORTANT rules:
-- If the email is an EMD receipt, ancillary fee receipt, meal pre-order, Wi-Fi purchase, or check-in reminder without full itinerary details, output empty events array.
-- If the email is a cancellation notice, output empty events array.
-- For flights: extract airline name and flight number ONLY from the flight itinerary table (e.g. "Flight Number:", "運航便:", "航班號:"). Never use airline/flight info from signatures, headers, or unrelated text.
-- For hotels: only extract check-in dates that are explicitly stated. Do NOT invent additional hotel stays not mentioned in the email.
-- Each event in the array must be a distinct, real travel segment from the email. Do not duplicate or fabricate events.
+- EMD receipts, ancillary fee receipts, meal pre-orders, Wi-Fi purchases, check-in reminders → {{"events": []}}
+- Cancellation notices → {{"events": []}}
+- Flights: extract airline + flight number ONLY from the itinerary table (e.g. "Flight Number:", "運航便:", "航班號:"). Never from signatures or unrelated text.
+- Hotels: extract ONLY check-in dates explicitly stated. Do NOT invent stays not in the email.
+- Hotels are NEVER all-day events — always use timed start/end (default T15:00:00 / T12:00:00 if times unknown).
+- Each event must be a distinct real travel segment. No duplicates or fabricated events.
 
 Output format: always return a JSON object with an "events" array.
 - Single event: {{"events": [{{...}}]}}
@@ -425,6 +434,15 @@ def parse_email_with_llm(email: dict) -> list[CalendarEvent]:
             data["start"] = _normalise_dt(data["start"])
             data["end"] = _normalise_dt(data["end"]) if data.get("end") else _add_one_hour(data["start"])
             data["is_all_day"] = _is_midnight(data["start"]) and _is_midnight(data["end"])
+            # 飯店事件不允許全天：若 LLM 違反指令輸出 T00:00:00，強制改回預設時間
+            if data["is_all_day"]:
+                hotel_signals = ["入住", "hotel", "飯店", "旅館", "hostel", "inn"]
+                if any(kw in (data.get("title") or "").lower() for kw in hotel_signals):
+                    data["is_all_day"] = False
+                    if "T00:00:00" in data["start"]:
+                        data["start"] = data["start"].replace("T00:00:00", "T15:00:00", 1)
+                    if "T00:00:00" in data["end"]:
+                        data["end"] = data["end"].replace("T00:00:00", "T12:00:00", 1)
             if data["is_all_day"] and data["start"][:10] == data["end"][:10]:
                 d = dateutil_parser.parse(data["end"])
                 data["end"] = (d + timedelta(days=1)).isoformat()
@@ -552,6 +570,36 @@ def _dedup_events(events_data: list[dict]) -> list[dict]:
 
 # ── Calendar ──────────────────────────────────────────────────────────────────
 
+OFFSET_TO_TIMEZONE = {
+    "+00:00": "UTC",
+    "+01:00": "Europe/Paris",
+    "+02:00": "Europe/Helsinki",
+    "+03:00": "Asia/Riyadh",
+    "+04:00": "Asia/Dubai",
+    "+05:00": "Asia/Karachi",
+    "+05:30": "Asia/Kolkata",
+    "+05:45": "Asia/Kathmandu",
+    "+06:00": "Asia/Dhaka",
+    "+06:30": "Asia/Rangoon",
+    "+07:00": "Asia/Bangkok",
+    "+08:00": "Asia/Taipei",
+    "+09:00": "Asia/Tokyo",
+    "+09:30": "Australia/Darwin",
+    "+10:00": "Australia/Sydney",
+    "+11:00": "Pacific/Noumea",
+    "+12:00": "Pacific/Auckland",
+    "-05:00": "America/New_York",
+    "-06:00": "America/Chicago",
+    "-07:00": "America/Denver",
+    "-08:00": "America/Los_Angeles",
+}
+
+
+def _timezone_from_offset(iso_str: str) -> str:
+    m = re.search(r'([+-]\d{2}:\d{2})$', iso_str)
+    return OFFSET_TO_TIMEZONE.get(m.group(1), "Asia/Taipei") if m else "Asia/Taipei"
+
+
 def get_or_create_calendar(service) -> str:
     calendars = service.calendarList().list().execute().get("items", [])
     for cal in calendars:
@@ -610,8 +658,8 @@ def insert_event(service, calendar_id: str, event: CalendarEvent):
         end_dt = dateutil_parser.parse(event.end) + timedelta(days=1)
         end_val = {"date": end_dt.strftime("%Y-%m-%d")}
     else:
-        start_val = {"dateTime": event.start, "timeZone": "Asia/Taipei"}
-        end_val   = {"dateTime": event.end,   "timeZone": "Asia/Taipei"}
+        start_val = {"dateTime": event.start, "timeZone": _timezone_from_offset(event.start)}
+        end_val   = {"dateTime": event.end,   "timeZone": _timezone_from_offset(event.end)}
 
     body = {
         "summary": event.title,
