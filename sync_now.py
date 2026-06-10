@@ -434,6 +434,15 @@ def parse_email_with_llm(email: dict) -> list[CalendarEvent]:
             data["start"] = _normalise_dt(data["start"])
             data["end"] = _normalise_dt(data["end"]) if data.get("end") else _add_one_hour(data["start"])
             data["is_all_day"] = _is_midnight(data["start"]) and _is_midnight(data["end"])
+            # 飯店事件不允許全天：若 LLM 違反指令輸出 T00:00:00，強制改回預設時間
+            if data["is_all_day"]:
+                hotel_signals = ["入住", "hotel", "飯店", "旅館", "hostel", "inn"]
+                if any(kw in (data.get("title") or "").lower() for kw in hotel_signals):
+                    data["is_all_day"] = False
+                    if "T00:00:00" in data["start"]:
+                        data["start"] = data["start"].replace("T00:00:00", "T15:00:00", 1)
+                    if "T00:00:00" in data["end"]:
+                        data["end"] = data["end"].replace("T00:00:00", "T12:00:00", 1)
             if data["is_all_day"] and data["start"][:10] == data["end"][:10]:
                 d = dateutil_parser.parse(data["end"])
                 data["end"] = (d + timedelta(days=1)).isoformat()
@@ -562,14 +571,27 @@ def _dedup_events(events_data: list[dict]) -> list[dict]:
 # ── Calendar ──────────────────────────────────────────────────────────────────
 
 OFFSET_TO_TIMEZONE = {
-    "+08:00": "Asia/Taipei",
-    "+09:00": "Asia/Tokyo",
-    "+07:00": "Asia/Bangkok",
+    "+00:00": "UTC",
+    "+01:00": "Europe/Paris",
+    "+02:00": "Europe/Helsinki",
+    "+03:00": "Asia/Riyadh",
+    "+04:00": "Asia/Dubai",
+    "+05:00": "Asia/Karachi",
     "+05:30": "Asia/Kolkata",
+    "+05:45": "Asia/Kathmandu",
     "+06:00": "Asia/Dhaka",
     "+06:30": "Asia/Rangoon",
+    "+07:00": "Asia/Bangkok",
+    "+08:00": "Asia/Taipei",
+    "+09:00": "Asia/Tokyo",
+    "+09:30": "Australia/Darwin",
     "+10:00": "Australia/Sydney",
-    "+05:45": "Asia/Kathmandu",
+    "+11:00": "Pacific/Noumea",
+    "+12:00": "Pacific/Auckland",
+    "-05:00": "America/New_York",
+    "-06:00": "America/Chicago",
+    "-07:00": "America/Denver",
+    "-08:00": "America/Los_Angeles",
 }
 
 

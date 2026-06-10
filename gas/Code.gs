@@ -423,6 +423,16 @@ Output format: always return a JSON object with an "events" array.
       data.end = data.end ? _normaliseDt(data.end) : _addOneHour(data.start);
       data.isAllDay = _isMidnight(data.start) && _isMidnight(data.end);
 
+      // 飯店事件不允許全天：若 LLM 違反指令輸出 T00:00:00，強制改回預設時間
+      if (data.isAllDay) {
+        const hotelSignals = ["入住", "hotel", "飯店", "旅館", "hostel", "inn"];
+        if (hotelSignals.some(kw => (data.title || "").toLowerCase().includes(kw))) {
+          data.isAllDay = false;
+          if (/T00:00:00/.test(data.start)) data.start = data.start.replace("T00:00:00", "T15:00:00");
+          if (/T00:00:00/.test(data.end))   data.end   = data.end.replace("T00:00:00", "T12:00:00");
+        }
+      }
+
       // 全天事件：若 start == end 則 end + 1 day
       if (data.isAllDay && data.start.substring(0, 10) === data.end.substring(0, 10)) {
         const [y, mo, d] = data.end.substring(0, 10).split("-").map(Number);
@@ -622,14 +632,27 @@ function _timezoneFromOffset(isoStr) {
   const m = isoStr.match(/([+-]\d{2}:\d{2})$/);
   if (!m) return "Asia/Taipei";
   const map = {
-    "+08:00": "Asia/Taipei",
-    "+09:00": "Asia/Tokyo",
-    "+07:00": "Asia/Bangkok",
+    "+00:00": "UTC",
+    "+01:00": "Europe/Paris",
+    "+02:00": "Europe/Helsinki",
+    "+03:00": "Asia/Riyadh",
+    "+04:00": "Asia/Dubai",
+    "+05:00": "Asia/Karachi",
     "+05:30": "Asia/Kolkata",
+    "+05:45": "Asia/Kathmandu",
     "+06:00": "Asia/Dhaka",
     "+06:30": "Asia/Rangoon",
+    "+07:00": "Asia/Bangkok",
+    "+08:00": "Asia/Taipei",
+    "+09:00": "Asia/Tokyo",
+    "+09:30": "Australia/Darwin",
     "+10:00": "Australia/Sydney",
-    "+05:45": "Asia/Kathmandu",
+    "+11:00": "Pacific/Noumea",
+    "+12:00": "Pacific/Auckland",
+    "-05:00": "America/New_York",
+    "-06:00": "America/Chicago",
+    "-07:00": "America/Denver",
+    "-08:00": "America/Los_Angeles",
   };
   return map[m[1]] || "Asia/Taipei";
 }
