@@ -353,7 +353,7 @@ Extract calendar events from the email. Output ONLY valid JSON with these exact 
     房型：[if in email]
     餐飲：[if in email, e.g. 含早餐 / 一泊二食 / 含早晚餐]
     [any other relevant details present in the email]
-  * Car rentals: 車型、取還車地點與時間、訂單號
+  * Car rentals: 車型、取還車地點與時間、訂單號、電話號碼（若有）
   * Transfers: 接送地址、車型、訂單號
 
 IMPORTANT rules:
