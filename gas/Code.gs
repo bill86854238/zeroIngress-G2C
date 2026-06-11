@@ -18,6 +18,7 @@ const CONFIG = {
   MAX_BODY_CHARS: 3000,
   SEARCH_DAYS: 90,
   PROCESSED_KEY: "processed_ids",
+  EVENT_MAP_KEY:  "event_map",
 };
 
 const KEYWORDS = [
@@ -115,6 +116,7 @@ function syncEmails() {
     }
 
     const processedIds = _loadProcessed();
+    const eventMap = _loadEventMap();
     const emails = _fetchCandidateEmails(processedIds);
 
     if (emails.length === 0) {
@@ -192,9 +194,12 @@ function syncEmails() {
       }
 
       try {
-        _insertEvent(calendarId, item.event);
-        Logger.log(`  ✅ 已建立: ${item.event.title}`);
-        _saveProcessed(item.email.id);
+        const msgId = item.email.id;
+        const newEventId = _upsertEvent(calendarId, item.event, msgId, eventMap);
+        if (!eventMap[msgId]) eventMap[msgId] = [];
+        if (!eventMap[msgId].includes(newEventId)) eventMap[msgId].push(newEventId);
+        Logger.log(`  ✅ 已建立/更新: ${item.event.title}`);
+        _saveProcessed(msgId);
         successCount++;
       } catch (err) {
         Logger.log(`  ❌ 寫入失敗: ${err.message}`);
@@ -202,6 +207,7 @@ function syncEmails() {
       }
     }
 
+    _saveEventMap(eventMap);
     const elapsed = ((new Date() - startTime) / 1000).toFixed(1);
     Logger.log(`=== 完成 | 成功: ${successCount} | 略過: ${skipCount} | 失敗: ${failCount} | 耗時: ${elapsed}s ===`);
 
@@ -476,21 +482,46 @@ function _getOrCreateCalendar() {
   return newCal.getId();
 }
 
-function _insertEvent(calendarId, event) {
-  _insertEventViaApi(calendarId, event);
+function _insertEvent(calendarId, event, msgId) {
+  return _insertEventViaApi(calendarId, event, msgId);
+}
+
+function _upsertEvent(calendarId, event, msgId, eventMap) {
+  // 若此 msgId 已有舊事件，先逐一刪除（忽略個別刪除錯誤）
+  const oldIds = eventMap[msgId] || [];
+  for (const oldId of oldIds) {
+    try { _deleteCalendarEvent(calendarId, oldId); } catch (e) {}
+  }
+  eventMap[msgId] = [];
+  return _insertEventViaApi(calendarId, event, msgId);
+}
+
+function _deleteCalendarEvent(calendarId, eventId) {
+  const token = ScriptApp.getOAuthToken();
+  const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
+  UrlFetchApp.fetch(url, {
+    method: "delete",
+    headers: { Authorization: `Bearer ${token}` },
+    muteHttpExceptions: true,
+  });
 }
 
 /**
  * 使用 Calendar REST API 插入事件（支援全天、多天、跨時區事件）
+ * 回傳建立的 eventId
  */
-function _insertEventViaApi(calendarId, event) {
+function _insertEventViaApi(calendarId, event, msgId) {
+  const gmailSuffix = msgId
+    ? `\n\n📧 原始信件: https://mail.google.com/mail/u/0/#all/${msgId}`
+    : "";
+
   let body;
 
   if (event.isAllDay) {
     body = {
       summary: event.title,
       location: event.location || "",
-      description: event.description || "",
+      description: (event.description || "") + gmailSuffix,
       start: { date: event.start.substring(0, 10) },
       end:   { date: event.end.substring(0, 10) },
     };
@@ -498,7 +529,7 @@ function _insertEventViaApi(calendarId, event) {
     body = {
       summary: event.title,
       location: event.location || "",
-      description: event.description || "",
+      description: (event.description || "") + gmailSuffix,
       start: { dateTime: event.start, timeZone: _timezoneFromOffset(event.start) },
       end:   { dateTime: event.end,   timeZone: _timezoneFromOffset(event.end) },
     };
@@ -518,6 +549,7 @@ function _insertEventViaApi(calendarId, event) {
   if (resp.getResponseCode() !== 200) {
     throw new Error(`Calendar API 回傳 ${resp.getResponseCode()}: ${resp.getContentText().substring(0, 200)}`);
   }
+  return JSON.parse(resp.getContentText()).id;
 }
 
 // ── 去重邏輯 ───────────────────────────────────────────────────────────────────
@@ -600,6 +632,60 @@ function _saveProcessed(msgId) {
 function resetProcessed() {
   PropertiesService.getScriptProperties().deleteProperty(CONFIG.PROCESSED_KEY);
   Logger.log("已清除 processed 記錄");
+}
+
+// ── event_map（msgId → [calendarEventId, ...]）──────────────────────────────
+
+function _loadEventMap() {
+  const raw = PropertiesService.getScriptProperties().getProperty(CONFIG.EVENT_MAP_KEY) || "{}";
+  try { return JSON.parse(raw); } catch (e) { return {}; }
+}
+
+function _saveEventMap(map) {
+  // 保留最近 150 筆，避免超過 9KB 限制
+  const entries = Object.entries(map);
+  const trimmed = entries.length > 150 ? Object.fromEntries(entries.slice(-150)) : map;
+  PropertiesService.getScriptProperties().setProperty(CONFIG.EVENT_MAP_KEY, JSON.stringify(trimmed));
+}
+
+/**
+ * 刪除 G2C 行事曆的所有事件並重置所有狀態。
+ * 執行後下次 syncEmails() 會把所有信件重新解析、重建事件（含正確時區）。
+ *
+ * 用法：在 GAS editor 手動執行此函式一次即可。
+ */
+function clearG2CCalendar() {
+  const calendarId = _getOrCreateCalendar();
+  const token = ScriptApp.getOAuthToken();
+  let pageToken = null;
+  let deleted = 0;
+
+  do {
+    const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?maxResults=250${pageToken ? "&pageToken=" + pageToken : ""}`;
+    const resp = UrlFetchApp.fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      muteHttpExceptions: true,
+    });
+    const data = JSON.parse(resp.getContentText());
+    const items = data.items || [];
+
+    for (const item of items) {
+      if (item.status === "cancelled") continue;
+      try {
+        _deleteCalendarEvent(calendarId, item.id);
+        deleted++;
+      } catch (e) {}
+    }
+    pageToken = data.nextPageToken || null;
+  } while (pageToken);
+
+  // 重置所有狀態，讓下次 syncEmails 從頭處理
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty(CONFIG.PROCESSED_KEY);
+  props.deleteProperty(CONFIG.EVENT_MAP_KEY);
+
+  Logger.log(`✅ clearG2CCalendar 完成：已刪除 ${deleted} 個事件，processed & event_map 已清除`);
+  Logger.log("👉 現在可以執行 syncEmails() 重新建立所有事件（含正確時區）");
 }
 
 // ── 日期工具 ───────────────────────────────────────────────────────────────────
