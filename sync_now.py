@@ -332,10 +332,11 @@ Extract calendar events from the email. Output ONLY valid JSON with these exact 
   * For FLIGHTS: start uses departure airport local timezone; end uses arrival airport local timezone.
     Example Taipei(TPE/TSA)→Sapporo(CTS): start "{BASE_YEAR}-06-22T10:30:00+08:00", end "{BASE_YEAR}-06-22T14:40:00+09:00"
   * For HOTELS: start = check-in date + check-in time from email (in hotel's local timezone).
-                If check-in time not stated in email, use T15:00:00.
+                If check-in time not stated in email, use T15:00:00 WITH the hotel's local timezone offset (e.g., T15:00:00+09:00 for Japan, T15:00:00+08:00 for Taiwan).
                 end = check-out date + check-out time from email (in hotel's local timezone).
-                If check-out time not stated in email, use T12:00:00.
-  * For other events with no known time: use T00:00:00 in the event's local timezone.
+                If check-out time not stated in email, use T12:00:00 WITH the hotel's local timezone offset (e.g., T12:00:00+09:00 for Japan, T12:00:00+08:00 for Taiwan).
+  * For other events with no known time: use T00:00:00 WITH the event's local timezone offset (e.g., T00:00:00+09:00 for Japan).
+  * CRITICAL: Every datetime string MUST end with a timezone offset (e.g., +09:00). NEVER output a bare datetime like T15:00:00 without an offset.
 
 - location:
   * Flights: "出發航廈 → 目的地機場" — must match the actual direction of this flight leg.
