@@ -133,8 +133,8 @@ function syncEmails() {
       const email = batch[i];
       Logger.log(`[${i + 1}/${batch.length}] 處理: ${email.subject.substring(0, 60)}`);
 
-      // Groq 免費版限速，每封間隔 3 秒
-      if (i > 0) Utilities.sleep(3000);
+      // Groq 免費版限速，每封間隔 10 秒
+      if (i > 0) Utilities.sleep(10000);
 
       try {
         const parsedEvents = _parseEmailWithGemini(email, apiKey);
@@ -599,6 +599,55 @@ function _saveProcessed(msgId) {
 function resetProcessed() {
   PropertiesService.getScriptProperties().deleteProperty(CONFIG.PROCESSED_KEY);
   Logger.log("已清除 processed 記錄");
+}
+
+/**
+ * 清空 G2C AI Sync 行事曆的所有事件
+ */
+function clearCalendarEvents() {
+  const calendarId = _getOrCreateCalendar();
+  const token = ScriptApp.getOAuthToken();
+  let pageToken = null;
+  let deleted = 0;
+
+  do {
+    let url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?maxResults=250&singleEvents=true`;
+    if (pageToken) url += `&pageToken=${pageToken}`;
+
+    const resp = UrlFetchApp.fetch(url, {
+      method: "get",
+      headers: { Authorization: `Bearer ${token}` },
+      muteHttpExceptions: true,
+    });
+    const data = JSON.parse(resp.getContentText());
+    const items = data.items || [];
+
+    for (const item of items) {
+      UrlFetchApp.fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${item.id}`,
+        {
+          method: "delete",
+          headers: { Authorization: `Bearer ${token}` },
+          muteHttpExceptions: true,
+        }
+      );
+      deleted++;
+    }
+
+    pageToken = data.nextPageToken || null;
+  } while (pageToken);
+
+  Logger.log(`已清除行事曆事件共 ${deleted} 筆`);
+}
+
+/**
+ * 完整重置：清空行事曆事件 + 清除已處理郵件記錄
+ * 執行後再跑 syncEmails() 即可從頭重新同步
+ */
+function fullReset() {
+  clearCalendarEvents();
+  resetProcessed();
+  Logger.log("✅ fullReset 完成，請執行 syncEmails() 重新同步");
 }
 
 // ── 日期工具 ───────────────────────────────────────────────────────────────────
